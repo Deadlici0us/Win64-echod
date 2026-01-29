@@ -39,6 +39,11 @@ The server follows a standard socket lifecycle but is optimized for concurrency:
 - **The Accept Loop:** The main thread blocks on `accept`. Upon connection, the socket handle is passed as a parameter to a new thread.
 - **Client Handler:** Each thread manages its own 1024-byte buffer on the stack, performing a `recv` -> `send` (echo) loop until the client disconnects.
 
+### Performance Roadmap
+While the current model is robust, future optimizations include:
+- **IOCP (I/O Completion Ports):** Moving away from one-thread-per-connection to a scalable completion port model.
+- **Zero-Copy Echo:** Utilizing `TransmitFile` or optimized buffer pooling to reduce stack pressure.
+
 ### x64 Calling Convention Implementation
 Unlike x86, x64 requires careful attention to the stack. This project manually handles:
 - **Register-based Argument Passing:** Utilizing `RCX`, `RDX`, `R8`, and `R9` for the first four arguments.

@@ -28,7 +28,22 @@ def client_task(client_id):
     except Exception as e:
         print(f"Client {client_id}: Error: {e}")
 
+def wait_for_server(host, port, timeout=5):
+    """Wait for the server to be ready to accept connections."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except (ConnectionRefusedError, socket.timeout):
+            time.sleep(0.1)
+    return False
+
 def run_test():
+    if not wait_for_server(HOST, PORT):
+        print(f"Error: Server at {HOST}:{PORT} not responding.")
+        sys.exit(1)
+        
     print(f"Starting {CLIENT_COUNT} clients...")
     threads = []
     for i in range(CLIENT_COUNT):
@@ -48,6 +63,4 @@ def run_test():
         sys.exit(1)
 
 if __name__ == "__main__":
-    # Wait a bit for server to potentially start if run back-to-back
-    time.sleep(1)
     run_test()
