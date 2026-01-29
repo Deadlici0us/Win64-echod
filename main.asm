@@ -4,29 +4,34 @@ include constants.inc
 
 ; External Windows functions
 extern accept:proc
-extern recv:proc
-extern send:proc
 extern closesocket:proc
 extern WSACleanup:proc
-extern QueueUserWorkItem:proc
 extern ExitProcess:proc
-extern WSAGetLastError:proc
+extern CreateIoCompletionPort:proc
+extern GetSystemInfo:proc
+extern CreateThread:proc
+extern CloseHandle:proc
 
 ; External Modular functions
 extern InitUtils:proc
 extern PrintString:proc
 extern InitNetwork:proc
 extern CreateListener:proc
-extern ClientHandler:proc
+extern WorkerThread:proc
+extern PostAccept:proc
 
 .data
     ; Null-terminated strings for console logging
-    msgStart        db "Starting Echo Server on port 8080...", 13, 10, 0
+    msgStart        db "Starting Echo Server on port 8080 (IOCP)...", 13, 10, 0
     msgSocketErr    db "Socket creation failed.", 13, 10, 0
     msgBindErr      db "Bind failed.", 13, 10, 0
     msgListenErr    db "Listen failed.", 13, 10, 0
     msgAcceptErr    db "Accept failed.", 13, 10, 0
-    msgThreadErr    db "Failed to queue work item.", 13, 10, 0
+    msgIOCPErr      db "CreateIoCompletionPort failed.", 13, 10, 0
+    msgThreadErr    db "CreateThread failed.", 13, 10, 0
+    
+    hIOCP           dq 0
+    sysInfo         BYTE 48 DUP(0) ; SYSTEM_INFO struct (approx size)
 
 .code
 
@@ -34,8 +39,8 @@ extern ClientHandler:proc
 ; Main Entry Point
 ; ---------------------------------------------------------
 main proc
-    ; Allocate shadow space (32) + CreateThread args (16) + alignment (8)
-    sub rsp, 56             
+    ; Allocate shadow space + locals
+    sub rsp, 88             
 
     call InitUtils
     call InitNetwork
@@ -45,16 +50,64 @@ main proc
     lea rcx, [msgStart]
     call PrintString
 
-    ; Create the listener socket via modular helper
+    ; 1. Create I/O Completion Port
+    ; CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0)
+    mov rcx, INVALID_HANDLE_VALUE
+    mov rdx, 0
+    mov r8, 0
+    mov r9, 0
+    call CreateIoCompletionPort
+    test rax, rax
+    jz err_iocp
+    mov [hIOCP], rax
+    mov rsi, rax            ; Keep hIOCP in RSI (non-volatile)
+
+    ; 2. Determine Number of Processors
+    lea rcx, [sysInfo]
+    call GetSystemInfo
+    
+    ; NumberOfProcessors is at offset 32 (DWORD) in SYSTEM_INFO
+    mov eax, dword ptr [sysInfo + 32]
+    
+    ; 3. Create Worker Threads (NumProcessors * 2)
+    add eax, eax            ; * 2
+    mov rdi, rax            ; Loop counter
+    
+thread_loop:
+    test rdi, rdi
+    jz threads_created
+    
+    ; CreateThread(NULL, 0, WorkerThread, hIOCP, 0, NULL)
+    mov rcx, 0              ; Security Attributes
+    mov rdx, 0              ; Stack Size
+    mov r8, WorkerThread    ; Start Address
+    mov r9, rsi             ; Parameter (hIOCP)
+    
+    mov qword ptr [rsp + 32], 0 ; Flags
+    mov qword ptr [rsp + 40], 0 ; ThreadId
+    
+    call CreateThread
+    test rax, rax
+    jz err_thread
+    
+    ; Close thread handle immediately (we don't need to join them)
+    mov rcx, rax
+    call CloseHandle
+    
+    dec rdi
+    jmp thread_loop
+
+threads_created:
+
+    ; 4. Create Listener Socket
     mov rcx, DEFAULT_PORT
     call CreateListener
     cmp rax, INVALID_SOCKET
     je clean_exit
-    mov rdi, rax            ; Save server socket in RDI (non-volatile)
-    ; };
+    mov rdi, rax            ; Save server socket in RDI
 
 accept_loop:
-    ; 6. Accept a new connection
+    ; 5. Accept a new connection
     mov rcx, rdi
     mov rdx, 0
     mov r8, 0
@@ -63,19 +116,24 @@ accept_loop:
     je err_accept
 
     ; Connection successful. Socket handle is in RAX.
-    mov rbx, rax            ; Move client socket to RBX (non-volatile) for safety
+    mov rbx, rax            ; Client Socket
 
-    ; 7. Submit to Windows Thread Pool
-    ; QueueUserWorkItem(ClientHandler, socket, WT_EXECUTEDEFAULT)
-    mov rcx, ClientHandler  ; Function
-    mov rdx, rbx            ; Context (socket)
-    mov r8, 0               ; Flags (WT_EXECUTEDEFAULT = 0)
-    call QueueUserWorkItem
-
-    test eax, eax           ; Returns non-zero on success
-    jz err_thread
+    ; 6. Associate with IOCP and Post Recv
+    mov rcx, rbx
+    mov rdx, rsi            ; hIOCP
+    call PostAccept
 
     jmp accept_loop
+
+err_iocp:
+    lea rcx, [msgIOCPErr]
+    call PrintString
+    jmp exit_proc
+
+err_thread:
+    lea rcx, [msgThreadErr]
+    call PrintString
+    jmp clean_exit
 
 err_socket:
     lea rcx, [msgSocketErr]
@@ -95,14 +153,6 @@ err_listen:
 err_accept:
     lea rcx, [msgAcceptErr]
     call PrintString
-    jmp accept_loop
-
-err_thread:
-    lea rcx, [msgThreadErr]
-    call PrintString
-    ; Close the client socket since thread failed
-    mov rcx, rbx
-    call closesocket
     jmp accept_loop
 
 clean_exit:

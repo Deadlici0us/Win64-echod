@@ -1,137 +1,285 @@
 option casemap:none
 include constants.inc
 
-extern recv:proc
-extern send:proc
+extern WSARecv:proc
+extern WSASend:proc
 extern closesocket:proc
 extern WSAGetLastError:proc
 extern PrintString:proc
-extern EnableNoDelay:proc
+extern GetProcessHeap:proc
+extern HeapAlloc:proc
+extern HeapFree:proc
+extern GetQueuedCompletionStatus:proc
+extern ExitThread:proc
 
 .data
-    msgClientCon    db "Client connected.", 13, 10, 0
-    msgClientDis    db "Client disconnected.", 13, 10, 0
-    msgRecvErr      db "Recv Error.", 13, 10, 0
-    msgErrNotSock   db "Error: WSAENOTSOCK (Not a socket).", 13, 10, 0
-    msgErrInval     db "Error: WSAEINVAL (Invalid argument).", 13, 10, 0
-    msgErrFault     db "Error: WSAEFAULT (Bad address).", 13, 10, 0
-    msgRecvZero     db "Recv returned 0 (Connection closed).", 13, 10, 0
-    msgSendErr      db "Send Error.", 13, 10, 0
-
+    msgWorkerStart  db "Worker Thread Started.", 13, 10, 0
+    msgRecvErr      db "WSARecv Failed.", 13, 10, 0
+    msgSendErr      db "WSASend Failed.", 13, 10, 0
+    msgClientDis    db "Client Disconnected.", 13, 10, 0
+    msgAssocErr     db "Assoc Failed.", 13, 10, 0
+    msgAllocErr     db "Alloc Failed.", 13, 10, 0
+    
 .code
 
 ; ---------------------------------------------------------
-; ProcessRequest
-; Purpose:  Abstracts the business logic (SRP). 
-;           Currently implements Echo, but can be swapped for HTTP.
-; Args:     RCX = Pointer to Buffer
-;           RDX = Length of data
-; Returns:  RAX = Length of response (in this case, same as input)
+; AllocContext
+; Purpose:  Allocates an IO_CONTEXT from the Heap
+; Returns:  RAX = Pointer to IO_CONTEXT, or NULL
 ; ---------------------------------------------------------
-ProcessRequest proc private
-    ; For a simple Echo, we don't need to do anything as the
-    ; input buffer is reused as the output buffer.
-    ; In a real HTTP server, this would parse the request in [RCX]
-    ; and write the response to [RCX] (or a new buffer).
-    
-    mov rax, rdx    ; Return the length of data to send
+AllocContext proc private
+    sub rsp, 40
+    call GetProcessHeap
+    mov rcx, rax            ; hHeap
+    mov rdx, 8              ; HEAP_ZERO_MEMORY
+    mov r8, sizeof IO_CONTEXT
+    call HeapAlloc
+    add rsp, 40
     ret
-ProcessRequest endp
+AllocContext endp
 
 ; ---------------------------------------------------------
-; ClientHandler
-; Purpose:  Manages the connection lifecycle (recv loop).
-;           Compatible with QueueUserWorkItem (Thread Pool).
+; FreeContext
+; Purpose:  Frees an IO_CONTEXT
+; Args:     RCX = Pointer to IO_CONTEXT
 ; ---------------------------------------------------------
-ClientHandler proc public
-    ; RCX contains the client socket handle
-    ; Note: QueueUserWorkItem callbacks must return 0 and use 'ret', NOT ExitThread.
-    
-    push rbx                ; Save non-volatile RBX
-    push rsi                ; Save non-volatile RSI
-    
-    ; Allocate data buffer + 32 bytes shadow space
-    sub rsp, BUFFER_SIZE + 32           
+FreeContext proc private
+    push rbx
+    sub rsp, 32
+    mov rbx, rcx            ; Save pointer
+    call GetProcessHeap
+    mov rcx, rax            ; hHeap
+    mov rdx, 0              ; Flags
+    mov r8, rbx             ; lpMem
+    call HeapFree
+    add rsp, 32
+    pop rbx
+    ret
+FreeContext endp
 
-    mov rbx, rcx            ; Store client socket in RBX
-    
-    ; Optimization: Enable TCP_NODELAY
-    mov rcx, rbx
-    call EnableNoDelay
+; ---------------------------------------------------------
+; WorkerThread
+; Purpose:  The IOCP Loop. Waits for completion packets and dispatch.
+; Args:     RCX = Completion Port Handle
+; ---------------------------------------------------------
+WorkerThread proc public
+    push rbx
+    push rsi
+    push rdi
+    ; Alignment: Entry ...8 -> Push x3 -> ...0.
+    ; Alloc 112 -> ...0. Correct.
+    sub rsp, 112
 
-    lea rcx, [msgClientCon]
+    mov rbx, rcx            ; Save Completion Port Handle
+    
+    lea rcx, [msgWorkerStart]
     call PrintString
 
-echo_loop:
-    ; recv(socket, buf, len, flags)
-    mov rcx, rbx            ; Arg 1: socket handle
-    lea rdx, [rsp + 32]     ; Arg 2: pointer to buffer
-    mov r8, BUFFER_SIZE     ; Arg 3: buffer length
-    mov r9, 0               ; Arg 4: flags
-    call recv
+iocp_loop:
+    ; GetQueuedCompletionStatus(hPort, &dwBytes, &lpKey, &lpOverlapped, INFINITE)
+    mov rcx, rbx            ; hPort
+    lea rdx, [rsp + 56]     ; lpNumberOfBytes
+    lea r8,  [rsp + 64]     ; lpCompletionKey
+    lea r9,  [rsp + 72]     ; lpOverlapped
+    mov dword ptr [rsp + 32], INFINITE ; Timeout
+    call GetQueuedCompletionStatus
 
-    ; Check result
+    test rax, rax
+    jz iocp_fail            ; If 0, check GetLastError/Overlapped
+
+    ; Check if bytes transferred is 0 (Client disconnected)
+    mov rax, [rsp + 72]     ; Get lpOverlapped
+    mov rsi, rax            ; RSI = Pointer to IO_CONTEXT
+    
+    mov eax, [rsp + 56]     ; Get Bytes Transferred
     cmp eax, 0
-    je recv_zero            ; 0 = closed
-    cmp eax, -1
-    je recv_error           ; -1 = error
+    je client_disconnect
 
-    ; -----------------------------------------------------
-    ; Business Logic Separation (SRP)
-    ; -----------------------------------------------------
-    lea rcx, [rsp + 32]     ; Ptr to data
-    movsxd rdx, eax         ; Length of data
-    call ProcessRequest
-    ; RAX now contains length to send
-    mov rsi, rax            ; Save length in RSI
+    ; Check Operation Type
+    mov eax, [rsi + IO_CONTEXT.opType]
+    cmp eax, OP_RECV
+    je handle_recv
+    cmp eax, OP_SEND
+    je handle_send
+    
+    jmp iocp_loop
 
-    ; -----------------------------------------------------
-    ; Send Response
-    ; -----------------------------------------------------
-    mov rcx, rbx            ; Arg 1: socket handle
-    lea rdx, [rsp + 32]     ; Arg 2: pointer to buffer
-    mov r8, rsi             ; Arg 3: length
-    mov r9, 0               ; Arg 4: flags
-    call send
+handle_recv:
+    ; Data received. Echo it back.
+    mov eax, [rsp + 56]     ; Bytes transferred
+    mov [rsi + IO_CONTEXT.wsabuf.len], eax
 
-    cmp eax, -1
-    je send_error
+    ; Prepare for Send
+    mov [rsi + IO_CONTEXT.opType], OP_SEND
+    
+    ; WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine)
+    mov rcx, [rsi + IO_CONTEXT.socket]
+    lea rdx, [rsi + IO_CONTEXT.wsabuf]
+    mov r8, 1               ; Buffer Count
+    lea r9, [rsp + 88]      ; lpNumberOfBytesSent (Scratch)
+    mov qword ptr [rsp + 32], 0 ; dwFlags
+    mov qword ptr [rsp + 40], rsi ; lpOverlapped
+    mov qword ptr [rsp + 48], 0 ; lpCompletionRoutine
+    call WSASend
 
-    jmp echo_loop
+    cmp eax, SOCKET_ERROR
+    je check_pending_send
+    jmp iocp_loop
 
-recv_zero:
-    lea rcx, [msgRecvZero]
-    call PrintString
-    jmp close_and_exit
-
-recv_error:
+check_pending_send:
     call WSAGetLastError
-    ; Error handling logic...
-    ; (Simplified for brevity, but could delegate to ErrorHandler)
-    lea rcx, [msgRecvErr]
-    call PrintString
-    jmp close_and_exit
+    cmp eax, WSA_IO_PENDING
+    je iocp_loop
+    ; Real error
+    jmp close_connection
 
-send_error:
-    lea rcx, [msgSendErr]
-    call PrintString
-    jmp close_and_exit
+handle_send:
+    ; Send complete. Post another Recv.
+    mov [rsi + IO_CONTEXT.opType], OP_RECV
+    mov [rsi + IO_CONTEXT.wsabuf.len], BUFFER_SIZE
+    
+    ; WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine)
+    mov rcx, [rsi + IO_CONTEXT.socket]
+    lea rdx, [rsi + IO_CONTEXT.wsabuf]
+    mov r8, 1               ; Buffer Count
+    lea r9, [rsp + 88]      ; lpNumberOfBytesRecvd (Scratch)
+    
+    ; Flags
+    mov qword ptr [rsp + 80], 0 ; Init flags to 0
+    lea rax, [rsp + 80]
+    mov [rsp + 32], rax     ; lpFlags
+    
+    mov qword ptr [rsp + 40], rsi ; lpOverlapped
+    mov qword ptr [rsp + 48], 0 ; lpCompletionRoutine
+    call WSARecv
+
+    cmp eax, SOCKET_ERROR
+    je check_pending_recv
+    jmp iocp_loop
+
+check_pending_recv:
+    call WSAGetLastError
+    cmp eax, WSA_IO_PENDING
+    je iocp_loop
+    jmp close_connection
 
 client_disconnect:
     lea rcx, [msgClientDis]
     call PrintString
+    jmp close_connection
 
-close_and_exit:
-    ; closesocket(socket)
-    mov rcx, rbx
+iocp_fail:
+    cmp qword ptr [rsp + 72], 0 ; Check lpOverlapped
+    je exit_worker
+    mov rsi, [rsp + 72]     ; Get Context
+    jmp close_connection
+
+close_connection:
+    mov rcx, [rsi + IO_CONTEXT.socket]
     call closesocket
+    mov rcx, rsi
+    call FreeContext
+    jmp iocp_loop
 
-    ; Return cleanly for Thread Pool compatibility
-    mov rax, 0
-    add rsp, BUFFER_SIZE + 32
+exit_worker:
+    add rsp, 112
+    pop rdi
     pop rsi
     pop rbx
+    mov rcx, 0
+    call ExitThread
     ret
-ClientHandler endp
+WorkerThread endp
+
+; ---------------------------------------------------------
+; PostAccept
+; Purpose:  Called by Main to associate socket and post first Recv
+; Args:     RCX = Socket, RDX = hIOCP
+; ---------------------------------------------------------
+PostAccept proc public
+    push rbx
+    push rdi
+    push rsi                ; Preserve RSI!
+    sub rsp, 80
+
+    mov rbx, rcx            ; Socket
+    mov rdi, rdx            ; hIOCP
+
+    ; 1. Associate Socket
+    mov rcx, rbx
+    mov rdx, rdi
+    mov r8, rbx             ; Key
+    mov r9, 0
+    call CreateIoCompletionPort
+    test rax, rax
+    jz assoc_fail
+
+    ; 2. Alloc Context
+    call AllocContext
+    test rax, rax
+    jz alloc_fail
+    mov rsi, rax            ; Context
+
+    ; 3. Setup
+    mov [rsi + IO_CONTEXT.socket], rbx
+    mov [rsi + IO_CONTEXT.opType], OP_RECV
+    mov [rsi + IO_CONTEXT.wsabuf.len], BUFFER_SIZE
+    lea rax, [rsi + IO_CONTEXT.buffer]
+    mov [rsi + IO_CONTEXT.wsabuf.buf], rax
+    
+    ; 4. WSARecv
+    mov rcx, rbx
+    lea rdx, [rsi + IO_CONTEXT.wsabuf]
+    mov r8, 1               ; Buffer Count
+    lea r9, [rsp + 64]      ; BytesRecvd (Local)
+    
+    ; Flags
+    mov qword ptr [rsp + 56], 0 ; Local Flags var
+    lea rax, [rsp + 56]
+    mov [rsp + 32], rax     ; lpFlags pointer
+    
+    mov qword ptr [rsp + 40], rsi ; lpOverlapped
+    mov qword ptr [rsp + 48], 0 ; CompletionRoutine
+    call WSARecv
+
+    cmp eax, SOCKET_ERROR
+    je check_pending_recv_init
+    jmp done
+
+check_pending_recv_init:
+    call WSAGetLastError
+    cmp eax, WSA_IO_PENDING
+    je done
+    ; Error
+    jmp error_cleanup
+
+done:
+    add rsp, 80
+    pop rsi
+    pop rdi
+    pop rbx
+    ret
+
+assoc_fail:
+    lea rcx, [msgAssocErr]
+    call PrintString
+    jmp done
+
+alloc_fail:
+    lea rcx, [msgAllocErr]
+    call PrintString
+    jmp done
+
+error_cleanup:
+    lea rcx, [msgRecvErr]
+    call PrintString
+    
+    mov rcx, rbx
+    call closesocket
+    mov rcx, rsi
+    call FreeContext
+    jmp done
+
+PostAccept endp
 
 end

@@ -23,11 +23,39 @@ SOCKET_ERROR      equ -1
 WSAENOTSOCK       equ 10038
 WSAEINVAL         equ 10022
 WSAEFAULT         equ 10014
+WSA_IO_PENDING    equ 997
+
+; Operation Types
+OP_RECV           equ 0
+OP_SEND           equ 1
 
 ; Structures
 sockaddr_in STRUCT
     sin_family WORD ?
     sin_port WORD ?
     sin_addr DWORD ?
-    sin_zero BYTE 8 DUP(?)
+    sin_zero BYTE 8 DUP(? )
 sockaddr_in ENDS
+
+WSABUF STRUCT
+    len   DWORD ?
+    byte_pad DWORD ? ; Padding for x64 alignment
+    buf   QWORD ?
+WSABUF ENDS
+
+WSAOVERLAPPED STRUCT
+    Internal      QWORD ?
+    InternalHigh  QWORD ?
+    OffsetLow     DWORD ?
+    OffsetHigh    DWORD ?
+    hEvent        QWORD ?
+WSAOVERLAPPED ENDS
+
+; Extended structure to track state per I/O operation
+IO_CONTEXT STRUCT
+    ov          WSAOVERLAPPED <>
+    wsabuf      WSABUF <>
+    socket      QWORD ?
+    opType      DWORD ?      ; OP_RECV or OP_SEND
+    buffer      BYTE BUFFER_SIZE DUP(?)
+IO_CONTEXT ENDS
