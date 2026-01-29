@@ -8,10 +8,8 @@ extern recv:proc
 extern send:proc
 extern closesocket:proc
 extern WSACleanup:proc
-extern CreateThread:proc
-extern ExitThread:proc
+extern QueueUserWorkItem:proc
 extern ExitProcess:proc
-extern CloseHandle:proc
 extern WSAGetLastError:proc
 
 ; External Modular functions
@@ -28,7 +26,7 @@ extern ClientHandler:proc
     msgBindErr      db "Bind failed.", 13, 10, 0
     msgListenErr    db "Listen failed.", 13, 10, 0
     msgAcceptErr    db "Accept failed.", 13, 10, 0
-    msgThreadErr    db "Failed to create thread.", 13, 10, 0
+    msgThreadErr    db "Failed to queue work item.", 13, 10, 0
 
 .code
 
@@ -67,25 +65,15 @@ accept_loop:
     ; Connection successful. Socket handle is in RAX.
     mov rbx, rax            ; Move client socket to RBX (non-volatile) for safety
 
-    ; 7. Create a new thread for the client
-    ; CreateThread(NULL, 0, ClientHandler, socket, 0, NULL)
-    mov rcx, 0              ; lpThreadAttributes
-    mov rdx, 0              ; dwStackSize
-    lea r8, ClientHandler   ; lpStartAddress
-    mov r9, rbx             ; lpParameter (the socket)
-    
-    ; 5th and 6th args go on stack
-    mov qword ptr [rsp + 32], 0 ; dwCreationFlags
-    mov qword ptr [rsp + 40], 0 ; lpThreadId
-    
-    call CreateThread
-    
-    cmp rax, 0
-    je err_thread
-    
-    ; Close the thread handle immediately (thread continues to run)
-    mov rcx, rax
-    call CloseHandle
+    ; 7. Submit to Windows Thread Pool
+    ; QueueUserWorkItem(ClientHandler, socket, WT_EXECUTEDEFAULT)
+    mov rcx, ClientHandler  ; Function
+    mov rdx, rbx            ; Context (socket)
+    mov r8, 0               ; Flags (WT_EXECUTEDEFAULT = 0)
+    call QueueUserWorkItem
+
+    test eax, eax           ; Returns non-zero on success
+    jz err_thread
 
     jmp accept_loop
 
