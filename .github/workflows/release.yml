@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           # Start the server in the background
-          $server = Start-Process -FilePath "build/win64-echod.exe" -PassThru
+          $server = Start-Process -FilePath "build/echod.exe" -PassThru
           try {
               python test_concurrency.py
           } finally {
@@ -49,7 +49,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            build/win64-echod.exe
+            build/echod.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
