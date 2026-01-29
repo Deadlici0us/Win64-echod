@@ -33,11 +33,11 @@ The project uses **CMake** to bridge the gap between assembly and modern develop
 ## 🛠 Technical Deep Dive
 
 ### The Architecture
-The server follows a standard socket lifecycle but is optimized for concurrency:
+The server follows a standard socket lifecycle but is optimized for concurrency and modularity:
 - **Initialization:** `WSAStartup` prepares the Winsock library.
-- **Listener Setup:** Creates a `SOCK_STREAM` (TCP) socket, binds to `0.0.0.0:8080`, and enters a listening state.
+- **Listener Setup:** Creates a `SOCK_STREAM` (TCP) socket, enables `SO_REUSEADDR` for immediate restarts, binds to `0.0.0.0:8080`, and enters a listening state.
 - **The Accept Loop:** The main thread blocks on `accept`. Upon connection, the socket handle is passed as a parameter to a new thread.
-- **Client Handler:** Each thread manages its own 1024-byte buffer on the stack, performing a `recv` -> `send` (echo) loop until the client disconnects.
+- **Client Handler (handler.asm):** Each thread manages its own stack-allocated buffer (defined by `BUFFER_SIZE`), enabling `TCP_NODELAY` for low-latency response, and performing a `recv` -> `send` (echo) loop.
 
 ### Performance Roadmap
 While the current model is robust, future optimizations include:
@@ -71,6 +71,12 @@ The server is paired with a Python-based testing suite to validate both function
 - Python 3.x (for testing)
 
 ### Build
+You can use the provided helper script:
+```powershell
+.\build.ps1
+```
+
+Or manually:
 ```powershell
 mkdir build
 cd build
@@ -78,9 +84,14 @@ cmake ..
 cmake --build .
 ```
 
+### Run Server
+```powershell
+.\run_server.ps1
+```
+
 ### Run Tests
 ```powershell
-python test_concurrency.py
+.\run_tests.ps1
 ```
 
 ---

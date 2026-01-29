@@ -22,8 +22,6 @@ extern CreateListener:proc
 extern ClientHandler:proc
 
 .data
-    serverPort      dq 8080
-    
     ; Null-terminated strings for console logging
     msgStart        db "Starting Echo Server on port 8080...", 13, 10, 0
     msgSocketErr    db "Socket creation failed.", 13, 10, 0
@@ -50,7 +48,7 @@ main proc
     call PrintString
 
     ; Create the listener socket via modular helper
-    mov rcx, [serverPort]
+    mov rcx, DEFAULT_PORT
     call CreateListener
     cmp rax, INVALID_SOCKET
     je clean_exit
