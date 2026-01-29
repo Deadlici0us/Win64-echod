@@ -40,6 +40,54 @@ Demonstrates rigorous adherence to the x64 calling convention:
     - If data was received, a Send is posted. If sent, a Recv is posted.
     - Contexts are recycled via the SList pool upon disconnection.
 
+```mermaid
+classDiagram
+    class Main {
+        +main()
+        -accept_loop()
+    }
+
+    class Network {
+        +InitNetwork()
+        +CreateListener(port)
+        +EnableNoDelay(socket)
+    }
+
+    class Handler {
+        +WorkerThread(hIOCP)
+        +PostAccept(socket, hIOCP)
+        -handle_recv()
+        -handle_send()
+    }
+
+    class Memory {
+        +InitMemory()
+        +AllocContext() : IO_CONTEXT*
+        +FreeContext(IO_CONTEXT*)
+    }
+
+    class Utils {
+        +InitUtils()
+        +PrintString(string)
+    }
+
+    class IO_CONTEXT {
+        +WSAOVERLAPPED ov
+        +SLIST_ENTRY poolEntry
+        +WSABUF wsabuf
+        +QWORD socket
+        +DWORD opType
+        +BYTE[] buffer
+    }
+
+    Main ..> Network : Uses
+    Main ..> Handler : Spawns Threads
+    Main ..> Memory : Inits
+    Handler ..> Memory : Alloc/Free
+    Handler ..> IO_CONTEXT : Manages
+    Handler ..> Utils : Logs
+```
+
 ### Build System (CMake)
 The project uses **CMake** (3.10+) to orchestrate the build, handling the discovery of the Microsoft Macro Assembler (`ml64.exe`) and configuring the linker for:
 - **Debug:** Full symbols (`/Zi`, `/DEBUG`).
