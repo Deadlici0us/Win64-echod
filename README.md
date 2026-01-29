@@ -107,6 +107,9 @@ Includes a Python-based test suite to verify correctness and stability.
 - CMake 3.10+
 - Python 3.x (for tests)
 
+### Releases
+- Download: You can skip the build process entirely by downloading the latest pre-compiled executable from the Releases section.
+
 ### 1. Build
 Use the helper script:
 ```cmd
@@ -119,6 +122,7 @@ cd build
 cmake -G "Ninja" ..
 cmake --build .
 ```
+- Once built (or downloaded from the releases page), you can start the server using the provided batch file or by running the executable directly.
 
 ### 2. Run Server
 ```cmd
