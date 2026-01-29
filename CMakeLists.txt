@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(win64-echod LANGUAGES C ASM_MASM)
 
-add_executable(echod main.asm utils.asm network.asm)
+add_executable(echod main.asm utils.asm network.asm handler.asm)
 
 # Ensure MASM can find our .inc files in the source directory
 target_compile_options(echod PRIVATE /I${CMAKE_CURRENT_SOURCE_DIR})

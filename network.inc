@@ -9,6 +9,14 @@ WSA_VERSION       equ 0202h
 ; Performance Optimization: Disable Nagle's Algorithm
 TCP_NODELAY       equ 1
 
+; Socket Options
+SOL_SOCKET        equ 0FFFFh
+SO_REUSEADDR      equ 4
+
+; Configuration
+BUFFER_SIZE       equ 1024
+DEFAULT_PORT      equ 8080
+
 ; Socket Error Codes
 INVALID_SOCKET    equ 0FFFFFFFFFFFFFFFFh ; Explicit 64-bit -1
 SOCKET_ERROR      equ -1
