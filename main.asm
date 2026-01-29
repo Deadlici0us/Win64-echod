@@ -1,11 +1,8 @@
 ; Set case sensitivity to none for labels and symbols
 option casemap:none 
+include constants.inc
 
 ; External Windows functions
-extern WSAStartup:proc
-extern socket:proc
-extern bind:proc
-extern listen:proc
 extern accept:proc
 extern recv:proc
 extern send:proc
@@ -14,26 +11,17 @@ extern WSACleanup:proc
 extern CreateThread:proc
 extern ExitThread:proc
 extern ExitProcess:proc
-extern GetStdHandle:proc
-extern WriteFile:proc
-extern htons:proc
 extern CloseHandle:proc
 extern WSAGetLastError:proc
 
-; Constants for Windows API and Sockets
-STD_OUTPUT_HANDLE equ -11             ; Handle for standard output
-AF_INET           equ 2               ; IPv4 address family
-SOCK_STREAM       equ 1               ; Stream socket (TCP)
-IPPROTO_TCP       equ 6               ; TCP protocol
-INVALID_SOCKET    equ -1
-SOCKET_ERROR      equ -1
-SOMAXCONN         equ 07FFFFFFFh
-INADDR_ANY        equ 0
+; External Modular functions
+extern InitUtils:proc
+extern PrintString:proc
+extern InitNetwork:proc
+extern CreateListener:proc
 
 .data
-    wsaData         db 400 dup(0)     ; Buffer for WSADATA structure (init by WSAStartup)
-    port            dw 8080           ; Server port
-    hStdOut         dq 0              ; Cached handle for standard output
+    serverPort      dq 8080
     
     ; Null-terminated strings for console logging
     msgStart        db "Starting Echo Server on port 8080...", 13, 10, 0
@@ -53,55 +41,6 @@ INADDR_ANY        equ 0
     msgThreadErr    db "Failed to create thread.", 13, 10, 0
 
 .code
-
-; ---------------------------------------------------------
-; Helper: StrLen
-; RCX = pointer to string
-; Returns length in RAX (standard C-style string length)
-; ---------------------------------------------------------
-StrLen proc
-    xor rax, rax
-    test rcx, rcx
-    jz done
-next:
-    cmp byte ptr [rcx + rax], 0
-    je done
-    inc rax
-    jmp next
-done:
-    ret
-StrLen endp
-
-; ---------------------------------------------------------
-; Helper: PrintString
-; RCX = pointer to null-terminated string
-; ---------------------------------------------------------
-PrintString proc
-    push rbx                ; Save non-volatile RBX; also aligns stack to 16 bytes
-    sub rsp, 48             ; Allocate 32 bytes shadow space + 16 bytes for alignment/args
-                            ; Win64 ABI requires 32 bytes shadow space for the callee
-
-    mov rbx, rcx            ; Store string pointer in RBX (non-volatile)
-
-    mov r10, [hStdOut]      ; Use the cached handle
-
-    ; Calculate length
-    mov rcx, rbx            ; String pointer
-    call StrLen
-    mov r8, rax             ; Length
-
-    ; WriteFile(handle, str, len, written_ptr, overlapped)
-    mov rcx, r10            ; hFile
-    mov rdx, rbx            ; lpBuffer
-                            ; r8 is already length
-    lea r9, [rsp + 40]      ; lpNumberOfBytesWritten (local var safe slot)
-    mov qword ptr [rsp + 32], 0 ; lpOverlapped (5th arg)
-    call WriteFile
-
-    add rsp, 48
-    pop rbx
-    ret
-PrintString endp
 
 ; ---------------------------------------------------------
 ; ClientHandler
@@ -162,11 +101,11 @@ recv_error:
     pop rax                 ; Restore error code to RAX
 
     ; Check common errors
-    cmp eax, 10038 ; WSAENOTSOCK
+    cmp eax, WSAENOTSOCK
     je err_notsock
-    cmp eax, 10022 ; WSAEINVAL
+    cmp eax, WSAEINVAL
     je err_inval
-    cmp eax, 10014 ; WSAEFAULT
+    cmp eax, WSAEFAULT
     je err_fault
     jmp close_and_exit
 
@@ -212,69 +151,24 @@ ClientHandler endp
 ; Main Entry Point
 ; ---------------------------------------------------------
 main proc
-    ; Allocate shadow space (32) + space for sockaddr_in (16) + alignment/locals
-    sub rsp, 88             
+    ; Allocate shadow space (32) + CreateThread args (16) + alignment (8)
+    sub rsp, 56             
 
-    ; Get and cache the standard output handle for PrintString
-    mov rcx, STD_OUTPUT_HANDLE
-    call GetStdHandle
-    mov [hStdOut], rax
-
-    ; 1. Initialize Winsock 2.2
-    mov rcx, 0202h          ; Version 2.2
-    lea rdx, wsaData
-    call WSAStartup
+    call InitUtils
+    call InitNetwork
     test rax, rax
     jnz exit_proc
 
     lea rcx, [msgStart]
     call PrintString
 
-    ; 2. Create the listener socket
-    mov rcx, AF_INET
-    mov rdx, SOCK_STREAM
-    mov r8, IPPROTO_TCP
-    call socket
+    ; Create the listener socket via modular helper
+    mov rcx, [serverPort]
+    call CreateListener
     cmp rax, INVALID_SOCKET
-    je err_socket
+    je clean_exit
     mov rdi, rax            ; Save server socket in RDI (non-volatile)
-
-    ; 3. Prepare sockaddr_in structure on the stack
-    ; struct sockaddr_in {
-    ;     short sin_family;
-    ;     u_short sin_port;
-    ;     struct in_addr sin_addr;
-    ;     char sin_zero[8];
     ; };
-    ; Constructing at [rsp + 48]
-    
-    ; Clear the struct (16 bytes)
-    mov qword ptr [rsp + 48], 0
-    mov qword ptr [rsp + 56], 0
-
-    mov word ptr [rsp + 48], AF_INET ; sin_family
-
-    ; Convert port 8080 to network byte order
-    mov rcx, 8080
-    call htons
-    mov word ptr [rsp + 50], ax      ; sin_port
-
-    mov dword ptr [rsp + 52], INADDR_ANY ; sin_addr
-
-    ; 4. Bind the socket to the address and port
-    mov rcx, rdi            ; socket
-    lea rdx, [rsp + 48]     ; ptr to sockaddr
-    mov r8, 16              ; sizeof(sockaddr_in)
-    call bind
-    cmp eax, -1             ; SOCKET_ERROR
-    je err_bind
-
-    ; 5. Start listening for incoming connections
-    mov rcx, rdi
-    mov rdx, SOMAXCONN
-    call listen
-    cmp eax, -1             ; SOCKET_ERROR
-    je err_listen
 
 accept_loop:
     ; 6. Accept a new connection
