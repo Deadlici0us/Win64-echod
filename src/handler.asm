@@ -60,7 +60,7 @@ iocp_loop:
     mov rsi, rax            ; RSI = Pointer to IO_CONTEXT
     
     mov eax, [rsp + 56]     ; Get Bytes Transferred
-    cmp eax, 0
+    test eax, eax
     je client_disconnect
 
     ; Check Operation Type

@@ -55,10 +55,10 @@ AllocContext proc public
     
     ; Zero out the WSAOVERLAPPED (first 32 bytes)
     ; This is critical as reused contexts have dirty state.
-    mov qword ptr [rax], 0      ; Internal
-    mov qword ptr [rax+8], 0    ; InternalHigh
-    mov qword ptr [rax+16], 0   ; OffsetLow + OffsetHigh
-    mov qword ptr [rax+24], 0   ; hEvent
+    ; Optimization: Use SSE to clear 32 bytes (2 x 16 bytes)
+    pxor xmm0, xmm0
+    movups [rax], xmm0      ; Offsets 0-15
+    movups [rax+16], xmm0   ; Offsets 16-31
     
     jmp done
 
