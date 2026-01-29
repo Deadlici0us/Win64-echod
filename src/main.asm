@@ -19,6 +19,8 @@ extern InitNetwork:proc
 extern CreateListener:proc
 extern WorkerThread:proc
 extern PostAccept:proc
+extern InitMemory:proc
+extern EnableNoDelay:proc
 
 .data
     ; Null-terminated strings for console logging
@@ -46,6 +48,8 @@ main proc
     call InitNetwork
     test rax, rax
     jnz exit_proc
+    
+    call InitMemory
 
     lea rcx, [msgStart]
     call PrintString
@@ -117,6 +121,10 @@ accept_loop:
 
     ; Connection successful. Socket handle is in RAX.
     mov rbx, rax            ; Client Socket
+
+    ; Enable TCP NoDelay
+    mov rcx, rbx
+    call EnableNoDelay
 
     ; 6. Associate with IOCP and Post Recv
     mov rcx, rbx

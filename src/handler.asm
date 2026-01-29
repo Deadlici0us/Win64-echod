@@ -12,6 +12,9 @@ extern HeapFree:proc
 extern GetQueuedCompletionStatus:proc
 extern ExitThread:proc
 
+extern AllocContext:proc
+extern FreeContext:proc
+
 .data
     msgWorkerStart  db "Worker Thread Started.", 13, 10, 0
     msgRecvErr      db "WSARecv Failed.", 13, 10, 0
@@ -21,41 +24,6 @@ extern ExitThread:proc
     msgAllocErr     db "Alloc Failed.", 13, 10, 0
     
 .code
-
-; ---------------------------------------------------------
-; AllocContext
-; Purpose:  Allocates an IO_CONTEXT from the Heap
-; Returns:  RAX = Pointer to IO_CONTEXT, or NULL
-; ---------------------------------------------------------
-AllocContext proc private
-    sub rsp, 40
-    call GetProcessHeap
-    mov rcx, rax            ; hHeap
-    mov rdx, 8              ; HEAP_ZERO_MEMORY
-    mov r8, sizeof IO_CONTEXT
-    call HeapAlloc
-    add rsp, 40
-    ret
-AllocContext endp
-
-; ---------------------------------------------------------
-; FreeContext
-; Purpose:  Frees an IO_CONTEXT
-; Args:     RCX = Pointer to IO_CONTEXT
-; ---------------------------------------------------------
-FreeContext proc private
-    push rbx
-    sub rsp, 32
-    mov rbx, rcx            ; Save pointer
-    call GetProcessHeap
-    mov rcx, rax            ; hHeap
-    mov rdx, 0              ; Flags
-    mov r8, rbx             ; lpMem
-    call HeapFree
-    add rsp, 32
-    pop rbx
-    ret
-FreeContext endp
 
 ; ---------------------------------------------------------
 ; WorkerThread

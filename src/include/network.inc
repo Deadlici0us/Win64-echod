@@ -52,10 +52,13 @@ WSAOVERLAPPED STRUCT
 WSAOVERLAPPED ENDS
 
 ; Extended structure to track state per I/O operation
+; Alignment Note: WSAOVERLAPPED is 32 bytes.
+; We place poolEntry at offset 32, which is 16-byte aligned, required for InterlockedPushEntrySList.
 IO_CONTEXT STRUCT
-    ov          WSAOVERLAPPED <>
-    wsabuf      WSABUF <>
-    socket      QWORD ?
-    opType      DWORD ?      ; OP_RECV or OP_SEND
-    buffer      BYTE BUFFER_SIZE DUP(?)
+    ov          WSAOVERLAPPED <> ; 0
+    poolEntry   SLIST_ENTRY <>   ; 32 (Used for Memory Pool)
+    wsabuf      WSABUF <>        ; 40
+    socket      QWORD ?          ; 56
+    opType      DWORD ?          ; 64
+    buffer      BYTE BUFFER_SIZE DUP(?) ; 68...
 IO_CONTEXT ENDS
