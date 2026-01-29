@@ -65,7 +65,7 @@ The server is paired with a Python-based testing suite to validate both function
 ### Build
 You can use the provided helper script:
 ```powershell
-.\build.ps1
+.\build.bat
 ```
 
 Or manually:

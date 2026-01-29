@@ -26,7 +26,7 @@ def client_task(client_id):
             else:
                 print(f"Client {client_id}: Mismatch. Sent {msg}, got {data}")
     except Exception as e:
-        print(f"Client {client_id}: Error: {e}")
+        print(f"Client {client_id}: Connection Error: {type(e).__name__} - {e}")
 
 def wait_for_server(host, port, timeout=5):
     """Wait for the server to be ready to accept connections."""
