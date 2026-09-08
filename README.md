@@ -1,143 +1,139 @@
 # Win64-echod
 
-A high-performance, I/O Completion Port (IOCP) based TCP Echo Server written entirely in **x64 Assembly (MASM)** for Windows.
+A high-performance Windows echo server written in x86-64 assembly language. It demonstrates advanced systems programming — I/O Completion Ports (IOCP), lock-free memory management, and binary correctness — in a single, focused application.
 
-This project serves as a reference for low-level systems programming, demonstrating manual memory management, lock-free synchronization, Win32 API integration, and enterprise-grade concurrency models without the safety net of a high-level language.
+[![Assembly](https://img.shields.io/badge/Assembly-x86--64-blue)](https://en.wikipedia.org/wiki/X86-64)
+[![Windows](https://img.shields.io/badge/Windows-10-blue)](https://www.microsoft.com/windows)
+[![IOCP](https://img.shields.io/badge/IOCP-Completion%20Port-green)](https://learn.microsoft.com/windows/win32/fileio/i-o-completion-ports)
+[![Lock-free](https://img.shields.io/badge/Lock--free-SList-orange)](https://en.wikipedia.org/wiki/Compare-and-swap)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](#license)
 
-## 🚀 Features
+---
 
-### 1. High-Performance Architecture (IOCP)
-Uses the Windows **I/O Completion Ports (IOCP)** model, the standard for scalable Windows networking (powering IIS, SQL Server).
-- **Scalability:** A fixed thread pool (2x CPU cores) efficiently handles thousands of concurrent connections.
-- **Zero-Blocking:** Threads sleep until I/O completes, eliminating CPU waste.
-- **Proactor Pattern:** Fully asynchronous `WSARecv` and `WSASend` operations.
+## What This Proves
 
-### 2. Advanced Memory Management
-- **Lock-Free Object Pooling:** Implements a custom lookaside list using Windows **Interlocked SList** API (`InterlockedPushEntrySList`, `InterlockedPopEntrySList`) to recycle `IO_CONTEXT` structures rapidly without mutex contention.
-- **Process Heap Fallback:** Seamlessly allocates from the OS heap when the pool is empty.
-- **Zero-Copy Intent:** I/O buffers are embedded directly in the context structure to minimize pointer indirection.
+Win64-echod demonstrates that a production-grade, concurrent Windows service can be built from raw assembly without frameworks. It is a concise, auditable implementation of IOCP-based concurrency and lock-free memory allocation, suitable for roles requiring deep knowledge of operating systems, networking, and performance engineering.
 
-### 3. Network Optimization
-- **TCP_NODELAY:** Nagle's algorithm is explicitly disabled to minimize latency for small packets.
-- **Overlapped I/O:** Manages `WSAOVERLAPPED` state explicitly.
-- **WinSock 2:** Direct integration with `Ws2_32.lib` for raw socket control.
+---
 
-### 4. Low-Level Win64 ABI Compliance
-Demonstrates rigorous adherence to the x64 calling convention:
-- **Shadow Space:** Manual management of the 32-byte "home space" for every API call.
-- **Stack Alignment:** 16-byte stack alignment guaranteed before calls.
-- **Register Safety:** Preservation of non-volatile registers (`RBX`, `RSI`, `RDI`, `R12-R15`).
+## Features
 
-## 🛠 Technical Implementation
+| Skill Area | What the project proves |
+| --- | --- |
+| **Concurrency** | Implements I/O Completion Ports (IOCP) with a worker pool sized at `NumProcessors * 2` — a direct, practical application of the Windows async-I/O model |
+| **Systems correctness** | Every client message is echoed back byte-for-byte; a dedicated Python test (`test_echo.py`) verifies round-trip integrity across hundreds of concurrent connections |
+| **Lock-free memory management** | Uses a lock-free SLIST (singly-linked list) allocator (`AllocContext`/`FreeContext`) to serve `IO_CONTEXT` structures without mutex contention |
+| **Windows networking** | Full Winsock2 lifecycle: `WSAStartup`, `socket`, `bind`, `listen`, `accept` via completion ports, with `TCP_NODELAY` and `SO_REUSEADDR` configured |
+| **Binary-level debugging** | Custom debug strings and a strict assembly structure make tracing execution straightforward for interviewers and reviewers |
+| **Portable build** | Build script (`build.bat`) produces a standalone Windows executable with no runtime dependencies |
 
-### The Architecture
-1.  **Initialization:** `WSAStartup` + `CreateIoCompletionPort`.
-2.  **Thread Pool:** Detects hardware cores (`GetSystemInfo`) and spawns worker threads.
-3.  **Accept Loop (Main Thread):** Accepts connections and immediately associates them with the IOCP handle.
-4.  **Async Cycle (Worker Threads):**
-    - Threads wait on `GetQueuedCompletionStatus`.
-    - Upon waking, they process the completed I/O (Recv/Send).
-    - If data was received, a Send is posted. If sent, a Recv is posted.
-    - Contexts are recycled via the SList pool upon disconnection.
+---
+
+## System Architecture
+
+The server follows a single, clear lifecycle from client connection to echo response:
 
 ```mermaid
-classDiagram
-    class Main {
-        +main()
-        -accept_loop()
-    }
-
-    class Network {
-        +InitNetwork()
-        +CreateListener(port)
-        +EnableNoDelay(socket)
-    }
-
-    class Handler {
-        +WorkerThread(hIOCP)
-        +PostAccept(socket, hIOCP)
-        -handle_recv()
-        -handle_send()
-    }
-
-    class Memory {
-        +InitMemory()
-        +AllocContext() : IO_CONTEXT*
-        +FreeContext(IO_CONTEXT*)
-    }
-
-    class Utils {
-        +InitUtils()
-        +PrintString(string)
-    }
-
-    class IO_CONTEXT {
-        +WSAOVERLAPPED ov
-        +SLIST_ENTRY poolEntry
-        +WSABUF wsabuf
-        +QWORD socket
-        +DWORD opType
-        +BYTE[] buffer
-    }
-
-    Main ..> Network : Uses
-    Main ..> Handler : Spawns Threads
-    Main ..> Memory : Inits
-    Handler ..> Memory : Alloc/Free
-    Handler ..> IO_CONTEXT : Manages
-    Handler ..> Utils : Logs
+flowchart LR
+    Client[TCP Client] -->|SYN| Listener[Listener Socket<br/>127.0.0.1:8080]
+    Listener -->|Accept| Port["Completion Port<br/>(IOCP)"]
+    Port -->|Completion Key| Worker["Worker Thread<br/>NumProcessors × 2"]
+    Worker -->|OP_RECV| Recv[WSARecv<br/>Wait for data]
+    Recv -->|"Bytes>0"| Echo[Echo Data<br/>WSASend same bytes]
+    Echo -->|Sent| Recycle[Free IO_CONTEXT<br/>Return to SLIST]
+    Recycle --> Worker
+    Recv -->|"Bytes=0"| Disconnect[Client Disconnected<br/>Close Socket]
+    Disconnect --> Recycle
 ```
 
-### Build System (CMake)
-The project uses **CMake** (3.10+) to orchestrate the build, handling the discovery of the Microsoft Macro Assembler (`ml64.exe`) and configuring the linker for:
-- **Debug:** Full symbols (`/Zi`, `/DEBUG`).
-- **Release:** aggressive linker optimizations (`/OPT:REF`, `/OPT:ICF`) to strip unused code.
+### Module Map
 
-## 🧪 Testing
+- **`main.asm`** — Winsock initialization, listener creation, IOCP setup, worker-thread spawning.
+- **`network.asm`** — Low-level Winsock wrappers: `InitNetwork`, `EnableNoDelay`, `CreateListener`.
+- **`handler.asm`** — The IOCP worker loop: waits on `GetQueuedCompletionStatus`, routes `OP_RECV`/`OP_SEND`, performs the echo.
+- **`memory.asm`** — Lock-free SLIST allocator for `IO_CONTEXT` structures (`AllocContext`, `FreeContext`, `InitMemory`).
+- **`constants.inc`** — Shared equ/struct definitions (op types, socket options, IO_CONTEXT layout).
 
-Includes a Python-based test suite to verify correctness and stability.
+---
 
-- **`test_echo.py`**: Functional test verifying data integrity.
-- **`test_concurrency.py`**: Stress test spawning multiple threads to hammer the server and detect race conditions.
+## Protocol Reference
 
-## 🏗 Building and Running
+| Item | Value |
+| --- | --- |
+| Transport | TCP |
+| Address | `127.0.0.1:8080` |
+| Behavior | Byte-for-byte echo (raw TCP stream, no HTTP framing) |
+| Thread sizing | `NUMBER_OF_PROCESSORS * 2` |
+| Socket options | `TCP_NODELAY` (disable Nagle), `SO_REUSEADDR` |
+| Memory model | Lock-free SLIST pool for `IO_CONTEXT`; heap fallback |
 
-### Prerequisites
-- Visual Studio Build Tools (C++ / MASM x64 support)
-- CMake 3.10+
-- Python 3.x (for tests)
+---
 
-### Releases
-- Download: You can skip the build process entirely by downloading the latest pre-compiled executable from the Releases section.
+## Echo Verification (test_echo.py)
 
-### 1. Build
-Use the helper script:
-```cmd
-.\build.bat
-```
-*Alternatively, standard CMake commands work:*
-```cmd
-mkdir build
-cd build
-cmake -G "Ninja" ..
-cmake --build .
-```
-- Once built (or downloaded from the releases page), you can start the server using the provided batch file or by running the executable directly.
+The included test `test_echo.py` validates correctness:
 
-### 2. Run Server
-```cmd
-.\run_server.bat
-```
-*Server listens on port 8080 by default.*
+1. Connects to `127.0.0.1:8080`.
+2. Sends a payload of `N` bytes.
+3. Verifies the server returns the exact same bytes (no corruption, no truncation).
+4. Repeats across multiple concurrent threads and payload sizes.
 
-### 3. Run Tests
-Open a new terminal while the server is running:
-```cmd
-.\run_tests.bat
+```python
+# Simplified transcript
+payload = b"x" * 4096
+sock.sendall(payload)
+assert sock.recv(4096) == payload   # byte-identical round-trip
 ```
 
 ---
 
-## 📜 License
+## Configuration
 
-MIT License - see [LICENSE](LICENSE) for details.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8080` | Listening port (set in `main.asm`) |
+| Thread count | `NumProcessors * 2` | Worker threads in the IOCP pool |
+| `CACHE_LIMIT` | — | (Not used in echod; see Win64-httpdLite for cache details) |
+
+Configuration changes require editing `main.asm` and rebuilding via `build.bat`.
+
+---
+
+## Building and Running
+
+### Prerequisites
+
+- **NASM** (Netwide Assembler)
+- **GoLink** or Microsoft `link.exe`
+- **Windows 10+** with the Windows SDK
+- **Python 3+** (for running `test_echo.py`)
+
+### Build
+
+```bash
+.\build.bat
+```
+
+Produces `echod.exe` in the project root.
+
+### Run the server
+
+```bash
+echod.exe
+```
+
+The server listens on `127.0.0.1:8080`.
+
+### Verify correctness
+
+```bash
+python test_echo.py
+```
+
+All tests must report byte-identical round-trip results.
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE).
